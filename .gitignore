@@ -7,4 +7,6 @@ ide/vs20??/VTune*
 out/
 docs/
 *.zip
+*.tar
+*.gz
 /.vs/VSWorkspaceState.json
