@@ -9,7 +9,7 @@ terms of the MIT license. A copy of the license can be found in the file
 #include "mimalloc/internal.h"
 #include "bitmap.h"
 
-#if MI_PAGE_MAP_FLAT 
+#if MI_PAGE_MAP_FLAT
 
 // The page-map contains a byte for each 64kb slice in the address space.
 // For an address `a` where `ofs = _mi_page_map[a >> 16]`:
@@ -40,7 +40,7 @@ bool _mi_page_map_init(void) {
   }
 
   // Allocate the page map and commit bits
-  mi_page_map_max_address = (void*)(MI_PU(1) << vbits);
+  mi_page_map_max_address = (void*)(vbits >= MI_SIZE_BITS ? (SIZE_MAX - MI_ARENA_SLICE_SIZE + 1) : (MI_PU(1) << vbits));
   const size_t page_map_size = (MI_ZU(1) << (vbits - MI_ARENA_SLICE_SHIFT));
   const bool commit = (page_map_size <= 1*MI_MiB || mi_option_is_enabled(mi_option_pagemap_commit)); // _mi_os_has_overcommit(); // commit on-access on Linux systems?
   const size_t commit_bits = _mi_divide_up(page_map_size, MI_PAGE_MAP_ENTRIES_PER_COMMIT_BIT);
@@ -80,12 +80,12 @@ static void mi_page_map_ensure_committed(size_t idx, size_t slice_count) {
     const size_t commit_idx_hi = (idx + slice_count - 1) / MI_PAGE_MAP_ENTRIES_PER_COMMIT_BIT;
     for (size_t i = commit_idx; i <= commit_idx_hi; i++) {  // per bit to avoid crossing over bitmap chunks
       if (mi_bitmap_is_clear(mi_page_map_commit, i)) {
-        // this may race, in which case we do multiple commits (which is ok)        
+        // this may race, in which case we do multiple commits (which is ok)
         bool is_zero;
         uint8_t* const start = _mi_page_map + (i * MI_PAGE_MAP_ENTRIES_PER_COMMIT_BIT);
         const size_t   size  = MI_PAGE_MAP_ENTRIES_PER_COMMIT_BIT;
         _mi_os_commit(start, size, &is_zero);
-        if (!is_zero && !mi_page_map_memid.initially_zero) { _mi_memzero(start, size); }        
+        if (!is_zero && !mi_page_map_memid.initially_zero) { _mi_memzero(start, size); }
         mi_bitmap_set(mi_page_map_commit, i);
       }
     }
@@ -166,7 +166,7 @@ mi_decl_cache_align mi_page_t*** _mi_page_map;
 static void*        mi_page_map_max_address;
 static mi_memid_t   mi_page_map_memid;
 
-static _Atomic(mi_bfield_t)  mi_page_map_commit; 
+static _Atomic(mi_bfield_t)  mi_page_map_commit;
 
 static mi_page_t** mi_page_map_ensure_committed(size_t idx);
 static mi_page_t** mi_page_map_ensure_at(size_t idx);
@@ -183,14 +183,14 @@ bool _mi_page_map_init(void) {
 
   // Allocate the page map and commit bits
   mi_assert(MI_MAX_VABITS >= vbits);
-  mi_page_map_max_address = (void*)(MI_PU(1) << vbits);
+  mi_page_map_max_address = (void*)(vbits >= MI_SIZE_BITS ? (SIZE_MAX - MI_ARENA_SLICE_SIZE + 1) : (MI_PU(1) << vbits));
   const size_t page_map_count = (MI_ZU(1) << (vbits - MI_PAGE_MAP_SUB_SHIFT - MI_ARENA_SLICE_SHIFT));
   mi_assert(page_map_count <= MI_PAGE_MAP_COUNT);
   const size_t os_page_size = _mi_os_page_size();
   const size_t page_map_size = _mi_align_up( page_map_count * sizeof(mi_page_t**), os_page_size);
   const size_t reserve_size = page_map_size + os_page_size;
-  const bool commit = page_map_size <= 64*MI_KiB || 
-                      mi_option_is_enabled(mi_option_pagemap_commit) || _mi_os_has_overcommit(); 
+  const bool commit = page_map_size <= 64*MI_KiB ||
+                      mi_option_is_enabled(mi_option_pagemap_commit) || _mi_os_has_overcommit();
   _mi_page_map = (mi_page_t***)_mi_os_alloc_aligned(reserve_size, 1, commit, true /* allow large */, &mi_page_map_memid);
   if (_mi_page_map==NULL) {
     _mi_error_message(ENOMEM, "unable to reserve virtual memory for the page map (%zu KiB)\n", page_map_size / MI_KiB);
@@ -206,13 +206,11 @@ bool _mi_page_map_init(void) {
   if (!mi_page_map_memid.initially_committed) {
     _mi_os_commit(&_mi_page_map[0], os_page_size, NULL);  // commit first part of the map
   }
-  _mi_page_map[0] = (mi_page_t**)((uint8_t*)_mi_page_map + page_map_size);  // we reserved 2 subs at the end already
+  _mi_page_map[0] = (mi_page_t**)((uint8_t*)_mi_page_map + page_map_size);  // we reserved 2 sub maps at the end already
   if (!mi_page_map_memid.initially_committed) {
     _mi_os_commit(_mi_page_map[0], os_page_size, NULL);   // only first OS page
   }
-  _mi_page_map[0][0] = (mi_page_t*)&_mi_page_empty;       // caught in `mi_free`
-  
-  mi_assert_internal(_mi_ptr_page(NULL)==&_mi_page_empty);
+  mi_assert_internal(_mi_ptr_page(NULL)==NULL);
   return true;
 }
 
@@ -221,7 +219,7 @@ bool _mi_page_map_init(void) {
 
 static inline bool mi_page_map_is_committed(size_t idx, size_t* pbit_idx) {
   mi_bfield_t commit = mi_atomic_load_relaxed(&mi_page_map_commit);
-  const size_t bit_idx = idx/MI_PAGE_MAP_ENTRIES_PER_CBIT; 
+  const size_t bit_idx = idx/MI_PAGE_MAP_ENTRIES_PER_CBIT;
   mi_assert_internal(bit_idx < MI_BFIELD_BITS);
   if (pbit_idx != NULL) { *pbit_idx = bit_idx; }
   return ((commit & (MI_ZU(1) << bit_idx)) != 0);
@@ -244,7 +242,7 @@ static mi_page_t** mi_page_map_ensure_at(size_t idx) {
     mi_memid_t memid;
     sub = (mi_page_t**)_mi_os_alloc(MI_PAGE_MAP_SUB_COUNT * sizeof(mi_page_t*), &memid);
     mi_page_t** expect = NULL;
-    if (!mi_atomic_cas_strong_acq_rel(((_Atomic(mi_page_t**)*)&_mi_page_map[idx]), &expect, sub)) {
+    if (!mi_atomic_cas_ptr_strong_acq_rel(mi_page_t*, ((_Atomic(mi_page_t**)*)&_mi_page_map[idx]), &expect, sub)) {
       // another thread already allocated it.. free and continue
       _mi_os_free(sub, MI_PAGE_MAP_SUB_COUNT * sizeof(mi_page_t*), memid);
       sub = expect;
@@ -264,11 +262,11 @@ static void mi_page_map_set_range(mi_page_t* page, size_t idx, size_t sub_idx, s
     // set the offsets for the page
     while (sub_idx < MI_PAGE_MAP_SUB_COUNT) {
       sub[sub_idx] = page;
-      slice_count--; if (slice_count == 0) return;      
-      sub_idx++;      
+      slice_count--; if (slice_count == 0) return;
+      sub_idx++;
     }
     idx++; // potentially wrap around to the next idx
-    sub_idx = 0; 
+    sub_idx = 0;
   }
 }
 
@@ -315,10 +313,10 @@ void _mi_page_map_unregister_range(void* start, size_t size) {
   mi_page_map_set_range(NULL, idx, sub_idx, slice_count);  // todo: avoid committing if not already committed?
 }
 
-// Return the empty page for the NULL pointer to match the behaviour of `_mi_ptr_page`
+// Return NULL for invalid pointers
 mi_page_t* _mi_safe_ptr_page(const void* p) {
+  if (p==NULL) return NULL;
   if mi_unlikely(p >= mi_page_map_max_address) return NULL;
-  if (p == NULL) return (mi_page_t*)&_mi_page_empty; // to match `_mi_ptr_page` (see `mi_free` as well)
   size_t sub_idx;
   const size_t idx = _mi_page_map_index(p,&sub_idx);
   if mi_unlikely(!mi_page_map_is_committed(idx,NULL)) return NULL;
@@ -328,7 +326,7 @@ mi_page_t* _mi_safe_ptr_page(const void* p) {
 }
 
 mi_decl_nodiscard mi_decl_export bool mi_is_in_heap_region(const void* p) mi_attr_noexcept {
-  return (p != NULL && _mi_safe_ptr_page(p) != NULL);
+  return (_mi_safe_ptr_page(p) != NULL);
 }
 
 #endif

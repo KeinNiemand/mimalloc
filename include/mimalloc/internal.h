@@ -18,11 +18,7 @@ terms of the MIT license. A copy of the license can be found in the file
 #include "track.h"
 #include "bits.h"
 
-#if (MI_DEBUG>0)
-#define mi_trace_message(...)  _mi_trace_message(__VA_ARGS__)
-#else
-#define mi_trace_message(...)
-#endif
+#define mi_decl_cache_align     mi_decl_align(64)
 
 #if defined(_MSC_VER)
 #pragma warning(disable:4127)   // suppress constant conditional warning (due to MI_SECURE paths)
@@ -52,18 +48,31 @@ terms of the MIT license. A copy of the license can be found in the file
 #define mi_decl_hidden
 #endif
 
-#define mi_decl_cache_align     mi_decl_align(64)
+#if (defined(__GNUC__) && (__GNUC__ >= 7)) || defined(__clang__) // includes clang and icc
+#define mi_decl_maybe_unused    __attribute__((unused))
+#elif __cplusplus >= 201703L    // c++17
+#define mi_decl_maybe_unused    [[maybe_unused]]
+#else
+#define mi_decl_maybe_unused
+#endif
+
+#if defined(__cplusplus)
+#define mi_decl_externc         extern "C"
+#else
+#define mi_decl_externc
+#endif
 
 
 #if defined(__EMSCRIPTEN__) && !defined(__wasi__)
 #define __wasi__
 #endif
 
-#if defined(__cplusplus)
-#define mi_decl_externc       extern "C"
+#if (MI_DEBUG>0)
+#define mi_trace_message(...)  _mi_trace_message(__VA_ARGS__)
 #else
-#define mi_decl_externc
+#define mi_trace_message(...)
 #endif
+
 
 // "libc.c"
 #include <stdarg.h>
@@ -80,10 +89,11 @@ bool          _mi_getenv(const char* name, char* result, size_t result_size);
 // "options.c"
 void          _mi_fputs(mi_output_fun* out, void* arg, const char* prefix, const char* message);
 void          _mi_fprintf(mi_output_fun* out, void* arg, const char* fmt, ...);
+void          _mi_raw_message(const char* fmt, ...);
+void          _mi_message(const char* fmt, ...);
 void          _mi_warning_message(const char* fmt, ...);
 void          _mi_verbose_message(const char* fmt, ...);
 void          _mi_trace_message(const char* fmt, ...);
-void          _mi_output_message(const char* fmt, ...);
 void          _mi_options_init(void);
 long          _mi_option_get_fast(mi_option_t option);
 void          _mi_error_message(int err, const char* fmt, ...);
@@ -118,6 +128,7 @@ mi_threadid_t _mi_thread_id(void) mi_attr_noexcept;
 size_t        _mi_thread_seq_id(void) mi_attr_noexcept;
 mi_tld_t*     _mi_thread_tld(void) mi_attr_noexcept;
 void          _mi_heap_guarded_init(mi_heap_t* heap);
+mi_heap_t*    _mi_heap_main_get(void);
 
 // os.c
 void          _mi_os_init(void);                                            // called from process init
@@ -139,15 +150,17 @@ bool          _mi_os_decommit(void* addr, size_t size);
 bool          _mi_os_protect(void* addr, size_t size);
 bool          _mi_os_unprotect(void* addr, size_t size);
 bool          _mi_os_purge(void* p, size_t size);
-bool          _mi_os_purge_ex(void* p, size_t size, bool allow_reset, size_t stats_size);
+bool          _mi_os_purge_ex(void* p, size_t size, bool allow_reset, size_t stats_size, mi_commit_fun_t* commit_fun, void* commit_fun_arg);
 bool          _mi_os_commit_ex(void* addr, size_t size, bool* is_zero, size_t stat_size);
 
 size_t        _mi_os_secure_guard_page_size(void);
-bool          _mi_os_secure_guard_page_set_at(void* addr, bool is_pinned);
-bool          _mi_os_secure_guard_page_set_before(void* addr, bool is_pinned);
-bool          _mi_os_secure_guard_page_reset_at(void* addr);
-bool          _mi_os_secure_guard_page_reset_before(void* addr);
+bool          _mi_os_secure_guard_page_set_at(void* addr, mi_memid_t memid);
+bool          _mi_os_secure_guard_page_set_before(void* addr, mi_memid_t memid);
+bool          _mi_os_secure_guard_page_reset_at(void* addr, mi_memid_t memid);
+bool          _mi_os_secure_guard_page_reset_before(void* addr, mi_memid_t memid);
 
+int           _mi_os_numa_node(void);
+int           _mi_os_numa_node_count(void);
 
 void*         _mi_os_alloc_aligned(size_t size, size_t alignment, bool commit, bool allow_large, mi_memid_t* memid);
 void*         _mi_os_alloc_aligned_at_offset(size_t size, size_t alignment, size_t align_offset, bool commit, bool allow_large, mi_memid_t* memid);
@@ -155,16 +168,16 @@ void*         _mi_os_alloc_aligned_at_offset(size_t size, size_t alignment, size
 void*         _mi_os_get_aligned_hint(size_t try_alignment, size_t size);
 bool          _mi_os_use_large_page(size_t size, size_t alignment);
 size_t        _mi_os_large_page_size(void);
-
 void*         _mi_os_alloc_huge_os_pages(size_t pages, int numa_node, mi_msecs_t max_secs, size_t* pages_reserved, size_t* psize, mi_memid_t* memid);
+
 
 // arena.c
 mi_arena_id_t _mi_arena_id_none(void);
 mi_arena_t*   _mi_arena_from_id(mi_arena_id_t id);
 bool          _mi_arena_memid_is_suitable(mi_memid_t memid, mi_arena_t* request_arena);
 
-void*         _mi_arenas_alloc(mi_subproc_t* subproc, size_t size, bool commit, bool allow_pinned, mi_arena_t* req_arena, size_t tseq, mi_memid_t* memid);
-void*         _mi_arenas_alloc_aligned(mi_subproc_t* subproc, size_t size, size_t alignment, size_t align_offset, bool commit, bool allow_pinned, mi_arena_t* req_arena, size_t tseq, mi_memid_t* memid);
+void*         _mi_arenas_alloc(mi_subproc_t* subproc, size_t size, bool commit, bool allow_pinned, mi_arena_t* req_arena, size_t tseq, int numa_node, mi_memid_t* memid);
+void*         _mi_arenas_alloc_aligned(mi_subproc_t* subproc, size_t size, size_t alignment, size_t align_offset, bool commit, bool allow_pinned, mi_arena_t* req_arena, size_t tseq, int numa_node, mi_memid_t* memid);
 void          _mi_arenas_free(void* p, size_t size, mi_memid_t memid);
 bool          _mi_arenas_contain(const void* p);
 void          _mi_arenas_collect(bool force_purge, bool visit_all, mi_tld_t* tld);
@@ -203,9 +216,10 @@ void          _mi_deferred_free(mi_heap_t* heap, bool force);
 void          _mi_page_free_collect(mi_page_t* page, bool force);
 void          _mi_page_free_collect_partly(mi_page_t* page, mi_block_t* head);
 void          _mi_page_init(mi_heap_t* heap, mi_page_t* page);
+bool          _mi_page_queue_is_valid(mi_heap_t* heap, const mi_page_queue_t* pq);
 
-size_t        _mi_bin_size(uint8_t bin); // for stats
-uint8_t       _mi_bin(size_t size);      // for stats
+size_t        _mi_bin_size(size_t bin);            // for stats
+size_t        _mi_bin(size_t size);                // for stats
 
 // "heap.c"
 mi_heap_t*    _mi_heap_create(int heap_tag, bool allow_destroy, mi_arena_id_t arena_id, mi_tld_t* tld);
@@ -242,28 +256,9 @@ bool          _mi_page_is_valid(mi_page_t* page);
 #endif
 
 
-// ------------------------------------------------------
-// Branches
-// ------------------------------------------------------
-
-#if defined(__GNUC__) || defined(__clang__)
-#define mi_unlikely(x)     (__builtin_expect(!!(x),false))
-#define mi_likely(x)       (__builtin_expect(!!(x),true))
-#elif (defined(__cplusplus) && (__cplusplus >= 202002L)) || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
-#define mi_unlikely(x)     (x) [[unlikely]]
-#define mi_likely(x)       (x) [[likely]]
-#else
-#define mi_unlikely(x)     (x)
-#define mi_likely(x)       (x)
-#endif
-
-#ifndef __has_builtin
-#define __has_builtin(x)  0
-#endif
-
 
 /* -----------------------------------------------------------
-  Assertions
+   Assertions
 ----------------------------------------------------------- */
 
 #if (MI_DEBUG)
@@ -286,6 +281,63 @@ void _mi_assert_fail(const char* assertion, const char* fname, unsigned int line
 #define mi_assert_expensive(x)
 #endif
 
+/* -----------------------------------------------------------
+  Statistics (in `stats.c`)
+----------------------------------------------------------- */
+
+// add to stat keeping track of the peak
+void __mi_stat_increase(mi_stat_count_t* stat, size_t amount);
+void __mi_stat_decrease(mi_stat_count_t* stat, size_t amount);
+void __mi_stat_increase_mt(mi_stat_count_t* stat, size_t amount);
+void __mi_stat_decrease_mt(mi_stat_count_t* stat, size_t amount);
+
+// adjust stat in special cases to compensate for double counting (and does not adjust peak values and can decrease the total)
+void __mi_stat_adjust_increase(mi_stat_count_t* stat, size_t amount);
+void __mi_stat_adjust_decrease(mi_stat_count_t* stat, size_t amount);
+void __mi_stat_adjust_increase_mt(mi_stat_count_t* stat, size_t amount);
+void __mi_stat_adjust_decrease_mt(mi_stat_count_t* stat, size_t amount);
+
+// counters can just be increased
+void __mi_stat_counter_increase(mi_stat_counter_t* stat, size_t amount);
+void __mi_stat_counter_increase_mt(mi_stat_counter_t* stat, size_t amount);
+
+#define mi_subproc_stat_counter_increase(subproc,stat,amount)   __mi_stat_counter_increase_mt( &(subproc)->stats.stat, amount)
+#define mi_subproc_stat_increase(subproc,stat,amount)           __mi_stat_increase_mt( &(subproc)->stats.stat, amount)
+#define mi_subproc_stat_decrease(subproc,stat,amount)           __mi_stat_decrease_mt( &(subproc)->stats.stat, amount)
+#define mi_subproc_stat_adjust_increase(subproc,stat,amnt)      __mi_stat_adjust_increase_mt( &(subproc)->stats.stat, amnt)
+#define mi_subproc_stat_adjust_decrease(subproc,stat,amnt)      __mi_stat_adjust_decrease_mt( &(subproc)->stats.stat, amnt)
+
+#define mi_tld_stat_counter_increase(tld,stat,amount)           __mi_stat_counter_increase( &(tld)->stats.stat, amount)
+#define mi_tld_stat_increase(tld,stat,amount)                   __mi_stat_increase( &(tld)->stats.stat, amount)
+#define mi_tld_stat_decrease(tld,stat,amount)                   __mi_stat_decrease( &(tld)->stats.stat, amount)
+#define mi_tld_stat_adjust_increase(tld,stat,amnt)              __mi_stat_adjust_increase( &(tld)->stats.stat, amnt)
+#define mi_tld_stat_adjust_decrease(tld,stat,amnt)              __mi_stat_adjust_decrease( &(tld)->stats.stat, amnt)
+
+#define mi_os_stat_counter_increase(stat,amount)                mi_subproc_stat_counter_increase(_mi_subproc(),stat,amount)
+#define mi_os_stat_increase(stat,amount)                        mi_subproc_stat_increase(_mi_subproc(),stat,amount)
+#define mi_os_stat_decrease(stat,amount)                        mi_subproc_stat_decrease(_mi_subproc(),stat,amount)
+
+#define mi_heap_stat_counter_increase(heap,stat,amount)         mi_tld_stat_counter_increase(heap->tld, stat, amount)
+#define mi_heap_stat_increase(heap,stat,amount)                 mi_tld_stat_increase( heap->tld, stat, amount)
+#define mi_heap_stat_decrease(heap,stat,amount)                 mi_tld_stat_decrease( heap->tld, stat, amount)
+#define mi_heap_stat_adjust_decrease(heap,stat,amount)          mi_tld_stat_adjust_decrease( heap->tld, stat, amount)
+
+/* -----------------------------------------------------------
+  Options (exposed for the debugger)
+----------------------------------------------------------- */
+typedef enum mi_option_init_e {
+  MI_OPTION_UNINIT,       // not yet initialized
+  MI_OPTION_DEFAULTED,    // not found in the environment, use default value
+  MI_OPTION_INITIALIZED   // found in environment or set explicitly
+} mi_option_init_t;
+
+typedef struct mi_option_desc_s {
+  long              value;  // the value
+  mi_option_init_t  init;   // is it initialized yet? (from the environment)
+  mi_option_t       option; // for debugging: the option index should match the option
+  const char*       name;   // option name without `mimalloc_` prefix
+  const char*       legacy_name; // potential legacy option name
+} mi_option_desc_t;
 
 /* -----------------------------------------------------------
   Inlined definitions
@@ -305,6 +357,8 @@ void _mi_assert_fail(const char* assertion, const char* fname, unsigned int line
 #define MI_INIT128(x) MI_INIT64(x),MI_INIT64(x)
 #define MI_INIT256(x) MI_INIT128(x),MI_INIT128(x)
 
+#define MI_INIT74(x)  MI_INIT64(x),MI_INIT8(x),x(),x()
+#define MI_INIT5(x)   MI_INIT4(x),x()
 
 #include <string.h>
 // initialize a local variable to zero; use memset as compilers optimize constant sized memset's
@@ -492,7 +546,7 @@ static inline mi_page_t* _mi_unchecked_ptr_page(const void* p) {
 // 2-level page map:
 // double indirection, but low commit and low virtual reserve.
 //
-// the page-map is usually 4 MiB and points to sub maps of 64 KiB.
+// the page-map is usually 4 MiB (for 48 bits virtual addresses) and points to sub maps of 64 KiB.
 // the page-map is committed on-demand (in 64 KiB parts) (and sub-maps are committed on-demand as well)
 // one sub page-map = 64 KiB => covers 2^(16-3) * 2^16 = 2^29 = 512 MiB address space
 // the page-map needs 48-(16+13) = 19 bits => 2^19 sub map pointers = 4 MiB size.
@@ -512,7 +566,7 @@ static inline size_t _mi_page_map_index(const void* p, size_t* sub_idx) {
 static inline mi_page_t* _mi_unchecked_ptr_page(const void* p) {
   size_t sub_idx;
   const size_t idx = _mi_page_map_index(p, &sub_idx);
-  return _mi_page_map[idx][sub_idx];
+  return _mi_page_map[idx][sub_idx];  // NULL if p==NULL
 }
 
 static inline mi_page_t* _mi_checked_ptr_page(const void* p) {
@@ -644,8 +698,9 @@ static inline bool mi_page_is_used_at_frac(const mi_page_t* page, uint16_t n) {
 
 
 static inline bool mi_page_is_huge(const mi_page_t* page) {
-  return (page->block_size > MI_LARGE_MAX_OBJ_SIZE ||
-          (mi_memkind_is_os(page->memid.memkind) && page->memid.mem.os.base < (void*)page));
+  return (mi_page_is_singleton(page) &&
+          (page->block_size > MI_LARGE_MAX_OBJ_SIZE ||
+           (mi_memkind_is_os(page->memid.memkind) && page->memid.mem.os.base < (void*)page)));
 }
 
 static inline mi_page_queue_t* mi_page_queue(const mi_heap_t* heap, size_t size) {
@@ -699,7 +754,7 @@ static inline void mi_page_set_heap(mi_page_t* page, mi_heap_t* heap) {
   const mi_threadid_t tid = (heap == NULL ? MI_THREADID_ABANDONED : heap->tld->thread_id) | mi_page_flags(page);
   if (heap != NULL) {
     page->heap = heap;
-    page->heap_tag = heap->tag;    
+    page->heap_tag = heap->tag;
   }
   else {
     page->heap = NULL;
@@ -1013,24 +1068,6 @@ static inline uintptr_t _mi_random_shuffle(uintptr_t x) {
   return x;
 }
 
-// -------------------------------------------------------------------
-// Optimize numa node access for the common case (= one node)
-// -------------------------------------------------------------------
-
-int    _mi_os_numa_node_get(void);
-size_t _mi_os_numa_node_count_get(void);
-
-extern mi_decl_hidden _Atomic(size_t) _mi_numa_node_count;
-static inline int _mi_os_numa_node(void) {
-  if mi_likely(mi_atomic_load_relaxed(&_mi_numa_node_count) == 1) { return 0; }
-  else return _mi_os_numa_node_get();
-}
-static inline size_t _mi_os_numa_node_count(void) {
-  const size_t count = mi_atomic_load_relaxed(&_mi_numa_node_count);
-  if mi_likely(count > 0) { return count; }
-  else return _mi_os_numa_node_count_get();
-}
-
 
 // ---------------------------------------------------------------------------------
 // Provide our own `_mi_memcpy` for potential performance optimizations.
@@ -1040,10 +1077,10 @@ static inline size_t _mi_os_numa_node_count(void) {
 // (AMD Zen3+ (~2020) or Intel Ice Lake+ (~2017). See also issue #201 and pr #253.
 // ---------------------------------------------------------------------------------
 
-#if !MI_TRACK_ENABLED && defined(_WIN32) && (defined(_M_IX86) || defined(_M_X64))
-#include <intrin.h>
-extern bool _mi_cpu_has_fsrm;
-extern bool _mi_cpu_has_erms;
+#if !MI_TRACK_ENABLED && defined(_WIN32) && (MI_ARCH_X64 || MI_ARCH_X86)
+extern mi_decl_hidden bool _mi_cpu_has_fsrm;
+extern mi_decl_hidden bool _mi_cpu_has_erms;
+
 static inline void _mi_memcpy(void* dst, const void* src, size_t n) {
   if ((_mi_cpu_has_fsrm && n <= 128) || (_mi_cpu_has_erms && n > 128)) {
     __movsb((unsigned char*)dst, (const unsigned char*)src, n);
