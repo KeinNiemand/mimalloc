@@ -87,16 +87,10 @@ static inline void mi_free_block_mt(mi_page_t* page, mi_block_t* block) mi_attr_
 // deallocated (as the block we are freeing keeps it alive) and thus safe to read concurrently.
 mi_block_t* _mi_page_ptr_unalign(const mi_page_t* page, const void* p) {
   mi_assert_internal(page!=NULL && p!=NULL);
-
-  size_t diff = (uint8_t*)p - mi_page_start(page);
-  size_t adjust;
-  if mi_likely(page->block_size_shift != 0) {
-    adjust = diff & (((size_t)1 << page->block_size_shift) - 1);
-  }
-  else {
-    adjust = diff % mi_page_block_size(page);
-  }
-
+  
+  const size_t diff = (uint8_t*)p - mi_page_start(page);
+  const size_t block_size = mi_page_block_size(page);
+  const size_t adjust = (_mi_is_power_of_two(block_size) ? diff & (block_size - 1) : diff % block_size);
   return (mi_block_t*)((uintptr_t)p - adjust);
 }
 
@@ -112,11 +106,22 @@ static inline void mi_block_check_unguard(mi_page_t* page, mi_block_t* block, vo
 }
 #endif
 
+static inline mi_block_t* mi_validate_block_from_ptr( const mi_page_t* page, void* p ) {
+  mi_assert(_mi_page_ptr_unalign(page,p) == (mi_block_t*)p); // should never be an interior pointer
+  #if MI_SECURE > 0
+  // in secure mode we always unalign to guard against free-ing interior pointers
+  return _mi_page_ptr_unalign(page,p);  
+  #else
+  MI_UNUSED(page);  
+  return (mi_block_t*)p;
+  #endif
+}
+
 
 // free a local pointer  (page parameter comes first for better codegen)
 static void mi_decl_noinline mi_free_generic_local(mi_page_t* page, void* p) mi_attr_noexcept {
   mi_assert_internal(p!=NULL && page != NULL);
-  mi_block_t* const block = (mi_page_has_aligned(page) ? _mi_page_ptr_unalign(page, p) : (mi_block_t*)p);
+  mi_block_t* const block = (mi_page_has_interior_pointers(page) ? _mi_page_ptr_unalign(page, p) : mi_validate_block_from_ptr(page,p));
   mi_block_check_unguard(page, block, p);
   mi_free_block_local(page, block, true /* track stats */, true /* check for a full page */);
 }
@@ -124,7 +129,7 @@ static void mi_decl_noinline mi_free_generic_local(mi_page_t* page, void* p) mi_
 // free a pointer owned by another thread (page parameter comes first for better codegen)
 static void mi_decl_noinline mi_free_generic_mt(mi_page_t* page, void* p) mi_attr_noexcept {
   mi_assert_internal(p!=NULL && page != NULL);
-  mi_block_t* const block = _mi_page_ptr_unalign(page, p); // don't check `has_aligned` flag to avoid a race (issue #865)
+  mi_block_t* const block = (mi_page_has_interior_pointers(page) ? _mi_page_ptr_unalign(page, p) : mi_validate_block_from_ptr(page,p));
   mi_block_check_unguard(page, block, p);
   mi_free_block_mt(page, block);
 }
@@ -148,7 +153,7 @@ static inline mi_page_t* mi_validate_ptr_page(const void* p, const char* msg)
   }
   mi_page_t* page = _mi_safe_ptr_page(p);
   if (p != NULL && page == NULL) {
-    _mi_error_message(EINVAL, "%s: invalid pointer: %p\n", msg, p);    
+    _mi_error_message(EINVAL, "%s: invalid pointer: %p\n", msg, p);
   }
   return page;
   #else
@@ -163,11 +168,11 @@ void mi_free(void* p) mi_attr_noexcept
   mi_page_t* const page = mi_validate_ptr_page(p,"mi_free");
   if mi_unlikely(page==NULL) return;  // page will be NULL if p==NULL
   mi_assert_internal(p!=NULL && page!=NULL);
-  
+
   const mi_threadid_t xtid = (_mi_prim_thread_id() ^ mi_page_xthread_id(page));
   if mi_likely(xtid == 0) {                        // `tid == mi_page_thread_id(page) && mi_page_flags(page) == 0`
     // thread-local, aligned, and not a full page
-    mi_block_t* const block = (mi_block_t*)p;
+    mi_block_t* const block = mi_validate_block_from_ptr(page,p);
     mi_free_block_local(page, block, true /* track stats */, false /* no need to check if the page is full */);
   }
   else if (xtid <= MI_PAGE_FLAG_MASK) {            // `tid == mi_page_thread_id(page) && mi_page_flags(page) != 0`
@@ -177,7 +182,7 @@ void mi_free(void* p) mi_attr_noexcept
   // free-ing in a page owned by a heap in another thread, or an abandoned page (not belonging to a heap)
   else if ((xtid & MI_PAGE_FLAG_MASK) == 0) {      // `tid != mi_page_thread_id(page) && mi_page_flags(page) == 0`
     // blocks are aligned (and not a full page); push on the thread_free list
-    mi_block_t* const block = (mi_block_t*)p;
+    mi_block_t* const block = mi_validate_block_from_ptr(page,p);
     mi_free_block_mt(page,block);
   }
   else {
@@ -191,16 +196,11 @@ void mi_free(void* p) mi_attr_noexcept
 // Multi-threaded Free (`_mt`)
 // ------------------------------------------------------
 static bool mi_page_unown_from_free(mi_page_t* page, mi_block_t* mt_free);
-static inline bool mi_page_queue_len_is_atmost( mi_heap_t* heap, size_t block_size, size_t atmost) {
+
+static inline bool mi_page_queue_len_is_atmost( mi_heap_t* heap, size_t block_size, long atmost) {
   mi_page_queue_t* const pq = mi_page_queue(heap,block_size);
   mi_assert_internal(pq!=NULL);
-  return (pq->count <= atmost);
-  /*
-  for(mi_page_t* p = pq->first; p!=NULL; p = p->next, atmost--) {
-    if (atmost == 0) { return false; }
-  }
-  return true;
-  */
+  return (pq->count <= (size_t)atmost);  
 }
 
 static void mi_decl_noinline mi_free_try_collect_mt(mi_page_t* page, mi_block_t* mt_free) mi_attr_noexcept {
@@ -219,16 +219,20 @@ static void mi_decl_noinline mi_free_try_collect_mt(mi_page_t* page, mi_block_t*
   // 1. free if the page is free now  (this is updated by `_mi_page_free_collect_partly`)
   if (mi_page_all_free(page))
   {
-    // first remove it from the abandoned pages in the arena (if mapped, this waits for any readers to finish)
+    // first remove it from the abandoned pages in the arena (if mapped, this might wait for any readers to finish)
     _mi_arenas_page_unabandon(page);
     // we can free the page directly
-    _mi_arenas_page_free(page);
+    _mi_arenas_page_free(page,NULL);
     return;
   }
 
   // 2. we can try to reclaim the page for ourselves
-  // note:  we only reclaim if the page originated from our heap (the heap field is preserved on abandonment)
-  // to avoid claiming arbitrary object sizes and limit indefinite expansion. This helps benchmarks like `larson`
+  // note: reclaiming can improve benchmarks like `larson` or `rbtree-ck` a lot even in the single-threaded case,
+  // since free-ing from an owned page avoids atomic operations. However, if we reclaim too eagerly in 
+  // a multi-threaded scenario we may start to hold on to too much memory and reduce reuse among threads.
+  // If the current heap is where the page originally came from, we reclaim much more eagerly while
+  // 'cross-thread' reclaiming on free is by default off (and we only 'reclaim' these by finding the abandoned 
+  // pages when we allocate a fresh page).
   if (page->block_size <= MI_SMALL_MAX_OBJ_SIZE)       // only for small sized blocks
   {
     const long reclaim_on_free = _mi_option_get_fast(mi_option_page_reclaim_on_free);
@@ -242,17 +246,25 @@ static void mi_decl_noinline mi_free_try_collect_mt(mi_page_t* page, mi_block_t*
           heap = _mi_heap_by_tag(heap, page->heap_tag);
         }
       }
-      // can we reclaim into this heap?
-      if (heap != NULL && heap->allow_page_reclaim) {
-        const long reclaim_max = _mi_option_get_fast(mi_option_page_reclaim_max);
-        if ((heap == page->heap && mi_page_queue_len_is_atmost(heap, page->block_size, reclaim_max)) ||  // only reclaim if we were the originating heap, and we have at most N pages already
-          (reclaim_on_free == 1 &&               // OR if the reclaim across heaps is allowed
-            !mi_page_is_used_at_frac(page, 8) &&  //    and the page is not too full
-            !heap->tld->is_in_threadpool &&       //    and not part of a threadpool
-            _mi_arena_memid_is_suitable(page->memid, heap->exclusive_arena))  // and the memory is suitable
-          )
-        {
-          // first remove it from the abandoned pages in the arena -- this waits for any readers to finish
+      // can we reclaim into this heap?      
+      if (heap != NULL && heap->allow_page_reclaim)      
+      {
+        long max_reclaim = 0;
+        if mi_likely(heap == page->heap) {  // did this page originate from the current heap?
+          // originating heap
+          max_reclaim = _mi_option_get_fast(heap->tld->is_in_threadpool ? mi_option_page_cross_thread_max_reclaim : mi_option_page_max_reclaim);          
+        }
+        else if (reclaim_on_free == 1 &&              // if cross-thread is allowed
+                 !heap->tld->is_in_threadpool &&      // and we are not part of a threadpool
+                 !mi_page_is_used_at_frac(page,8) &&  // and the page is not too full
+                 _mi_arena_memid_is_suitable(page->memid, heap->exclusive_arena)) {   // and it fits our memory
+          // across threads
+          max_reclaim = _mi_option_get_fast(mi_option_page_cross_thread_max_reclaim);
+        }
+        
+        if (max_reclaim < 0 || mi_page_queue_len_is_atmost(heap, page->block_size, max_reclaim)) { // are we within the reclaim limit?
+          // reclaim the page into this heap
+          // first remove it from the abandoned pages in the arena -- this might wait for any readers to finish
           _mi_arenas_page_unabandon(page);
           _mi_heap_page_reclaim(heap, page);
           mi_heap_stat_counter_increase(heap, pages_reclaim_on_free, 1);
@@ -293,7 +305,7 @@ static bool mi_page_unown_from_free(mi_page_t* page, mi_block_t* mt_free) {
       _mi_page_free_collect(page,false);  // update used
       if (mi_page_all_free(page)) {   // it may become free just before unowning it
         _mi_arenas_page_unabandon(page);
-        _mi_arenas_page_free(page);
+        _mi_arenas_page_free(page,NULL);
         return true;
       }
       tf_expect = mi_atomic_load_relaxed(&page->xthread_free);
@@ -327,7 +339,7 @@ static size_t mi_decl_noinline mi_page_usable_aligned_size_of(const mi_page_t* p
 static inline size_t _mi_usable_size(const void* p, const char* msg) mi_attr_noexcept {
   const mi_page_t* const page = mi_validate_ptr_page(p,msg);
   if mi_unlikely(page==NULL) return 0;
-  if mi_likely(!mi_page_has_aligned(page)) {
+  if mi_likely(!mi_page_has_interior_pointers(page)) {
     const mi_block_t* block = (const mi_block_t*)p;
     return mi_page_usable_size_of(page, block);
   }
@@ -555,7 +567,7 @@ void mi_stat_free(const mi_page_t* page, const mi_block_t* block) {
 static void mi_block_unguard(mi_page_t* page, mi_block_t* block, void* p) {
   MI_UNUSED(p);
   mi_assert_internal(mi_block_ptr_is_guarded(block, p));
-  mi_assert_internal(mi_page_has_aligned(page));
+  mi_assert_internal(mi_page_has_interior_pointers(page));
   mi_assert_internal((uint8_t*)p - (uint8_t*)block >= (ptrdiff_t)sizeof(mi_block_t));
   mi_assert_internal(block->next == MI_BLOCK_TAG_GUARDED);
 

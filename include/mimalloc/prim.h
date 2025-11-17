@@ -59,9 +59,14 @@ int _mi_prim_commit(void* addr, size_t size, bool* is_zero);
 // pre: needs_recommit != NULL
 int _mi_prim_decommit(void* addr, size_t size, bool* needs_recommit);
 
-// Reset memory. The range keeps being accessible but the content might be reset.
+// Reset memory. The range keeps being accessible but the content might be reset to zero at any moment.
 // Returns error code or 0 on success.
 int _mi_prim_reset(void* addr, size_t size);
+
+// Reuse memory. This is called for memory that is already committed but
+// may have been reset (`_mi_prim_reset`) or decommitted (`_mi_prim_decommit`) where `needs_recommit` was false.
+// Returns error code or 0 on success. On most platforms this is a no-op.
+int _mi_prim_reuse(void* addr, size_t size);
 
 // Protect memory. Returns error code or 0 on success.
 int _mi_prim_protect(void* addr, size_t size, bool protect);
@@ -119,7 +124,6 @@ void _mi_prim_thread_associate_default_heap(mi_heap_t* heap);
 
 // Is this thread part of a thread pool?
 bool _mi_prim_thread_is_in_threadpool(void);
-
 
 
 //-------------------------------------------------------------------
@@ -212,7 +216,7 @@ static inline void mi_prim_tls_slot_set(size_t slot, void* value) mi_attr_noexce
 // thread-local initialization checks in the fast path.
 // We allocate a user TLS slot at process initialization (see `windows/prim.c`)
 // and store the offset `_mi_win_tls_offset`.
-#define MI_HAS_TLS_SLOT      2              // 2 = we can reliably initialize the slot (saving a test on each malloc)
+#define MI_HAS_TLS_SLOT  1              // 2 = we can reliably initialize the slot (saving a test on each malloc)
 
 extern mi_decl_hidden size_t _mi_win_tls_offset;
 

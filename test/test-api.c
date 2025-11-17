@@ -43,6 +43,8 @@ we therefore test the API over various inputs. Please add more tests :-)
 // ---------------------------------------------------------------------------
 bool test_heap1(void);
 bool test_heap2(void);
+bool test_heap_arena_destroy(void);
+bool test_heap_arena_delete(void);
 bool test_stl_allocator1(void);
 bool test_stl_allocator2(void);
 
@@ -86,9 +88,14 @@ int main(void) {
   CHECK_BODY("malloc-nomem1") {
     result = (mi_malloc((size_t)PTRDIFF_MAX + (size_t)1) == NULL);
   };
-  CHECK_BODY("malloc-null") {
+  CHECK_BODY("malloc-free-null") {
     mi_free(NULL);
   };
+  #if MI_INTPTR_BITS > 32
+  CHECK_BODY("malloc-free-invalid-low") {
+    mi_free((void*)(MI_ZU(0x0000000003990080))); // issue #1087
+  };
+  #endif
   CHECK_BODY("calloc-overflow") {
     // use (size_t)&mi_calloc to get some number without triggering compiler warnings
     result = (mi_calloc((size_t)&mi_calloc,SIZE_MAX/1000) == NULL);
@@ -163,7 +170,7 @@ int main(void) {
     void* p = mi_malloc_aligned(4097,4096);
     size_t usable = mi_usable_size(p);
     result = (usable >= 4097 && usable < 16000);
-    printf("malloc_aligned5: usable size: %zi\n", usable);
+    fprintf(stderr, "malloc_aligned5: usable size: %zi.  ", usable);
     mi_free(p);
   };
   /*
@@ -334,6 +341,8 @@ int main(void) {
   // ---------------------------------------------------
   CHECK("heap_destroy", test_heap1());
   CHECK("heap_delete", test_heap2());
+  CHECK("heap_arena_destroy", test_heap_arena_destroy());
+  CHECK("heap_arena_delete", test_heap_arena_delete());
 
   //mi_stats_print(NULL);
 
@@ -383,6 +392,32 @@ bool test_heap2(void) {
   *p1 = 42;
   mi_free(p1);
   mi_free(p2);
+  return true;
+}
+
+bool test_heap_arena_destroy(void) {
+  mi_arena_id_t arena_id = NULL;
+  if (mi_reserve_os_memory_ex(32 * 1024 * 1024, true, false, true, &arena_id) != 0) {
+    return false;
+  }
+  mi_heap_t* heap = mi_heap_new_ex(0, true, arena_id);
+  if (heap == NULL) {
+    return false;
+  }
+  mi_heap_destroy(heap);
+  return true;
+}
+
+bool test_heap_arena_delete(void) {
+  mi_arena_id_t arena_id = NULL;
+  if (mi_reserve_os_memory_ex(32 * 1024 * 1024, true, false, true, &arena_id) != 0) {
+    return false;
+  }
+  mi_heap_t* heap = mi_heap_new_ex(0, true, arena_id);
+  if (heap == NULL) {
+    return false;
+  }
+  mi_heap_delete(heap);
   return true;
 }
 

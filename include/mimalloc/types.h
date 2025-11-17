@@ -22,6 +22,7 @@ terms of the MIT license. A copy of the license can be found in the file
 #include <mimalloc-stats.h>
 #include <stddef.h>   // ptrdiff_t
 #include <stdint.h>   // uintptr_t, uint16_t, etc
+#include <stdbool.h>  // bool
 #include <limits.h>   // SIZE_MAX etc.
 #include <errno.h>    // error codes
 #include "bits.h"     // size defines (MI_INTPTR_SIZE etc), bit operations
@@ -50,7 +51,7 @@ terms of the MIT license. A copy of the license can be found in the file
 
 // Define MI_SECURE to enable security mitigations. Level 1 has minimal performance impact,
 // but protects most metadata with guard pages:
-//   #define MI_SECURE 1  // guard page around metadata
+//   #define MI_SECURE 1  // guard page around metadata; check pointer validity on free
 //
 // Level 2 has more performance impact but protect well against various buffer overflows
 // by surrounding all mimalloc pages with guard pages:
@@ -148,12 +149,13 @@ terms of the MIT license. A copy of the license can be found in the file
 #define MI_ARENA_SLICE_ALIGN              (MI_ARENA_SLICE_SIZE)
 
 #define MI_ARENA_MIN_OBJ_SLICES           (1)
-#define MI_ARENA_MAX_OBJ_SLICES           (MI_BCHUNK_BITS)            // 32 MiB (for now, cannot cross chunk boundaries)
+#define MI_ARENA_MAX_CHUNK_OBJ_SLICES     (MI_BCHUNK_BITS)            // 32 MiB (for now, cannot cross chunk boundaries) (or 8 MiB on 32-bit)
 
 #define MI_ARENA_MIN_OBJ_SIZE             (MI_ARENA_MIN_OBJ_SLICES * MI_ARENA_SLICE_SIZE)
-#define MI_ARENA_MAX_OBJ_SIZE             (MI_ARENA_MAX_OBJ_SLICES * MI_ARENA_SLICE_SIZE)
+#define MI_ARENA_MAX_CHUNK_OBJ_SIZE       (MI_ARENA_MAX_CHUNK_OBJ_SLICES * MI_ARENA_SLICE_SIZE)  
+#define MI_ARENA_MAX_OBJ_SIZE             (MI_SIZE_BITS * MI_ARENA_MAX_CHUNK_OBJ_SIZE)  // 1 GiB (or 256 MiB on 32-bit)
 
-#if MI_ARENA_MAX_OBJ_SIZE < MI_SIZE_SIZE*1024
+#if MI_ARENA_MAX_CHUNK_OBJ_SIZE < MI_SIZE_SIZE*1024
 #error maximum object size may be too small to hold local thread data  
 #endif
 
@@ -275,17 +277,18 @@ typedef struct mi_block_s {
 
 
 // The page flags are put in the bottom 2 bits of the thread_id (for a fast test in `mi_free`)
-// `has_aligned` is true if the page has pointers at an offset in a block (so we unalign before free-ing)
+// If `has_interior_pointers` is true if the page has pointers at an offset in a block (so we have to unalign to the block start before free-ing)
 // `in_full_queue` is true if the page is full and resides in the full queue (so we move it to a regular queue on free-ing)
-#define MI_PAGE_IN_FULL_QUEUE         MI_ZU(0x01)
-#define MI_PAGE_HAS_ALIGNED           MI_ZU(0x02)
-#define MI_PAGE_FLAG_MASK             MI_ZU(0x03)
+#define MI_PAGE_IN_FULL_QUEUE           MI_ZU(0x01)
+#define MI_PAGE_HAS_INTERIOR_POINTERS   MI_ZU(0x02)
+#define MI_PAGE_FLAG_MASK               MI_ZU(0x03)
 typedef size_t mi_page_flags_t;
 
 // There are two special threadid's: 0 for abandoned threads, and 4 for abandoned & mapped threads --
-// abandoned-mapped pages are abandoned but also mapped in an arena so can be quickly found for reuse.
-#define MI_THREADID_ABANDONED         MI_ZU(0)
-#define MI_THREADID_ABANDONED_MAPPED  (MI_PAGE_FLAG_MASK + 1)
+// abandoned-mapped pages are abandoned but also mapped in an arena (in `mi_arena_t.pages_abandoned`) 
+// so these can be quickly found for reuse.
+#define MI_THREADID_ABANDONED           MI_ZU(0)
+#define MI_THREADID_ABANDONED_MAPPED    (MI_PAGE_FLAG_MASK + 1)
 
 // Thread free list.
 // Points to a list of blocks that are freed by other threads.
@@ -320,7 +323,7 @@ typedef uint8_t mi_heaptag_t;
 //   free an object and (re)claim ownership if the page was abandoned.
 // - If a page is not part of a heap it is called "abandoned"  (`heap==NULL`) -- in
 //   that case the `xthreadid` is 0 or 4 (4 is for abandoned pages that
-//   are in the abandoned page lists of an arena, these are called "mapped" abandoned pages).
+//   are in the `pages_abandoned` lists of an arena, these are called "mapped" abandoned pages).
 // - page flags are in the bottom 3 bits of `xthread_id` for the fast path in `mi_free`.
 // - The layout is optimized for `free.c:mi_free` and `alloc.c:mi_page_alloc`
 // - Using `uint16_t` does not seem to slow things down
@@ -332,9 +335,8 @@ typedef struct mi_page_s {
   uint16_t                  used;              // number of blocks in use (including blocks in `thread_free`)
   uint16_t                  capacity;          // number of blocks committed
   uint16_t                  reserved;          // number of blocks reserved in memory
-  uint8_t                   block_size_shift;  // if not zero, then `(1 << block_size_shift) == block_size` (only used for fast path in `free.c:_mi_page_ptr_unalign`)
   uint8_t                   retire_expire;     // expiration count for retired blocks
-
+                                               // padding  
   mi_block_t*               local_free;        // list of deferred free blocks by this thread (migrates to `free`)
   _Atomic(mi_thread_free_t) xthread_free;      // list of deferred free blocks freed by other threads (= `mi_block_t* | (1 if owned)`)
 
@@ -471,7 +473,6 @@ struct mi_heap_s {
   size_t                guarded_size_min;                    // minimal size for guarded objects
   size_t                guarded_size_max;                    // maximal size for guarded objects
   size_t                guarded_sample_rate;                 // sample rate (set to 0 to disable guarded pages)
-  size_t                guarded_sample_seed;                 // starting sample count
   size_t                guarded_sample_count;                // current sample count (counting down to 0)
   #endif
   mi_page_t*            pages_free_direct[MI_PAGES_DIRECT];  // optimize: array where every entry points a page with possibly free blocks in the corresponding queue for that size.
