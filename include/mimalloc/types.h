@@ -126,7 +126,11 @@ terms of the MIT license. A copy of the license can be found in the file
   #ifdef  MI_SMALL_PAGE_SHIFT   // backward compatibility
   #define MI_ARENA_SLICE_SHIFT              MI_SMALL_PAGE_SHIFT
   #else
-  #define MI_ARENA_SLICE_SHIFT              (13 + MI_SIZE_SHIFT)        // 64 KiB (32 KiB on 32-bit)
+  // LargePageInjectorMods: 16 KiB slices -> 256-bit bchunks -> 4 MiB minimum arena (a multiple of the
+  // 2 MiB large-page size). This lets allow_large back arenas with large pages even when physical memory
+  // is too fragmented to provide the stock 32 MiB-contiguous arena. Auto-scaling (MI_BCHUNK_BITS_SHIFT)
+  // keeps the bitmap structure valid for this slice size.
+  #define MI_ARENA_SLICE_SHIFT              (11 + MI_SIZE_SHIFT)        // 16 KiB (8 KiB on 32-bit)
   #endif
 #endif
 #if MI_ARENA_SLICE_SHIFT < 12

@@ -65,7 +65,11 @@ size_t _mi_os_virtual_address_bits(void) {
 bool _mi_os_use_large_page(size_t size, size_t alignment) {
   // if we have access, check the size and alignment requirements
   if (mi_os_mem_config.large_page_size == 0 || !mi_option_is_enabled(mi_option_allow_large_os_pages)) return false;
-  return ((size % mi_os_mem_config.large_page_size) == 0 && (alignment % mi_os_mem_config.large_page_size) == 0);
+  // LargePageInjectorMods patch: a large-page (2MiB-aligned) result satisfies any alignment that DIVIDES the
+  // large-page size (e.g. mimalloc's 64KiB arena alignment). The upstream check required alignment to be a
+  // *multiple* of the large-page size, which excluded the 64KiB-aligned arena allocations entirely and meant
+  // large pages were never used on Windows except via the huge-reserve path (needs GiB-contiguous RAM).
+  return ((size % mi_os_mem_config.large_page_size) == 0 && (mi_os_mem_config.large_page_size % alignment) == 0);
 }
 
 // round to a good OS allocation size (bounded by max 12.5% waste)
