@@ -41,10 +41,12 @@ static bool mi_page_extend_free(mi_theap_t* theap, mi_page_t* page);
 
 #if (MI_DEBUG>=3)
 static size_t mi_page_list_count(mi_page_t* page, mi_block_t* head) {
-  mi_assert_internal(_mi_ptr_page(page) == page);
+  mi_assert_internal(_mi_ptr_page(mi_page_start(page)) == page);
+  const uint8_t* slice_start = mi_page_slice_start(page);
+  mi_assert_internal(_mi_is_aligned(slice_start,MI_PAGE_ALIGN));
   size_t count = 0;
   while (head != NULL) {
-    mi_assert_internal((uint8_t*)head - (uint8_t*)page > (ptrdiff_t)MI_LARGE_PAGE_SIZE || page == _mi_ptr_page(head));
+    mi_assert_internal((uint8_t*)head - slice_start > (ptrdiff_t)MI_LARGE_PAGE_SIZE || page == _mi_ptr_page(head));
     count++;
     head = mi_block_next(page, head);
   }
@@ -152,8 +154,13 @@ static void mi_page_thread_collect_to_local(mi_page_t* page, mi_block_t* head)
   }
 
   // if `count > max_count` there was a memory corruption (possibly infinite list due to double multi-threaded free)
-  if (count > max_count) {
+  if mi_unlikely(count > max_count) {
     _mi_error_message(EFAULT, "corrupted thread-free list\n");
+    return; // the thread-free items cannot be freed
+  }
+  // if `count > page->used` there was another kind memory corruption (either in the page meta-data or in the linked list)
+  else if mi_unlikely(count > page->used) {
+    _mi_error_message(EFAULT, "corrupted meta-data in thread-free list\n");
     return; // the thread-free items cannot be freed
   }
 
@@ -183,6 +190,17 @@ static void mi_page_thread_free_collect(mi_page_t* page)
 
   // and move it to the local list
   mi_page_thread_collect_to_local(page, head);
+}
+
+// returns `true` if after collection `mi_page_immediate_available` is true.
+static bool mi_page_free_quick_collect(mi_page_t* page) {
+  if (page->free != NULL) return true;
+  if (page->local_free == NULL) return false;
+  // move local_free to free
+  page->free = page->local_free;
+  page->local_free = NULL;
+  page->free_is_zero = false;
+  return true;
 }
 
 void _mi_page_free_collect(mi_page_t* page, bool force) {
@@ -268,8 +286,8 @@ void _mi_page_reclaim(mi_theap_t* theap, mi_page_t* page) {
 // called from `mi_free` on a reclaim, and fresh_alloc if we get an abandoned page
 void _mi_theap_page_reclaim(mi_theap_t* theap, mi_page_t* page)
 {
-  mi_assert_internal(_mi_is_aligned(page, MI_PAGE_ALIGN));
-  mi_assert_internal(_mi_ptr_page(page)==page);
+  mi_assert_internal(_mi_is_aligned(mi_page_slice_start(page), MI_PAGE_ALIGN));
+  mi_assert_internal(_mi_ptr_page(mi_page_start(page))==page);
   mi_assert_internal(mi_page_is_owned(page));
   mi_assert_internal(mi_page_is_abandoned(page));
 
@@ -407,6 +425,7 @@ void _mi_page_free(mi_page_t* page, mi_page_queue_t* pq) {
 // Retire a page with no more used blocks
 // Important to not retire too quickly though as new
 // allocations might coming.
+//
 // Note: called from `mi_free` and benchmarks often
 // trigger this due to freeing everything and then
 // allocating again so careful when changing this.
@@ -415,6 +434,7 @@ void _mi_page_retire(mi_page_t* page) mi_attr_noexcept {
   mi_assert_expensive(_mi_page_is_valid(page));
   mi_assert_internal(mi_page_all_free(page));
 
+  if (page->retire_expire!=0) return;  // already retired, just keep it retired
   mi_page_set_has_interior_pointers(page, false);
 
   // don't retire too often..
@@ -457,8 +477,8 @@ void _mi_theap_collect_retired(mi_theap_t* theap, bool force) {
     if (page != NULL && page->retire_expire != 0) {
       if (mi_page_all_free(page)) {
         page->retire_expire--;
-        if (force || page->retire_expire == 0) {
-          _mi_page_free(pq->first, pq);
+        if (page->retire_expire == 0 || force) {
+          _mi_page_free(page, pq);
         }
         else {
           // keep retired, update min/max
@@ -595,7 +615,7 @@ static mi_decl_noinline void mi_page_free_list_extend( mi_page_t* const page, co
 ----------------------------------------------------------- */
 
 #define MI_MAX_EXTEND_SIZE    (4*1024)      // heuristic, one OS page seems to work well.
-#if (MI_SECURE>=3)
+#if (MI_SECURE>=2)
 #define MI_MIN_EXTEND         (8*MI_SECURE) // extend at least by this many
 #else
 #define MI_MIN_EXTEND         (1)
@@ -649,12 +669,13 @@ static bool mi_page_extend_free(mi_theap_t* theap, mi_page_t* page) {
       if (!_mi_os_commit(mi_page_slice_start(page) + page->slice_committed, needed_commit - page->slice_committed, NULL)) {
         return false;
       }
-      page->slice_committed = needed_commit;
+      mi_assert_internal(needed_commit < UINT32_MAX);
+      page->slice_committed = (uint32_t)needed_commit;
     }
   }
 
   // and append the extend the free list
-  if (extend < MI_MIN_SLICES || MI_SECURE<3) { //!mi_option_is_enabled(mi_option_secure)) {
+  if (extend < MI_MIN_SLICES || MI_SECURE<2) { //!mi_option_is_enabled(mi_option_secure)) {
     mi_page_free_list_extend(page, bsize, extend );
   }
   else {
@@ -673,7 +694,7 @@ static bool mi_page_extend_free(mi_theap_t* theap, mi_page_t* page) {
 mi_decl_nodiscard bool _mi_page_init(mi_theap_t* theap, mi_page_t* page) {
   mi_assert(page != NULL);
   mi_assert(theap!=NULL);
-  page->heap = (_mi_is_heap_main(theap->heap) ? NULL : theap->heap); // faster for `mi_page_associated_theap`
+  page->heap = (_mi_is_heap_main(_mi_theap_heap(theap)) ? NULL : _mi_theap_heap(theap)); // faster for `mi_page_associated_theap`
   mi_page_set_theap(page, theap);
 
   size_t page_size;
@@ -687,7 +708,7 @@ mi_decl_nodiscard bool _mi_page_init(mi_theap_t* theap, mi_page_t* page) {
   #endif
   #if MI_DEBUG>2
   if (page->memid.initially_zero) {
-    mi_track_mem_defined(page->page_start, mi_page_committed(page));
+    mi_track_mem_defined(mi_page_start(page), mi_page_committed(page));
     mi_assert_expensive(mi_mem_is_zero(page_start, mi_page_committed(page)));
   }
   #endif
@@ -842,8 +863,8 @@ static mi_page_t* mi_find_free_page(mi_theap_t* theap, mi_page_queue_t* pq) {
 
   // check the first page: we even do this with candidate search or otherwise we re-search every time
   mi_page_t* page = pq->first;
-  if mi_likely(page != NULL && mi_page_immediate_available(page)) {
-    #if (MI_SECURE>=3) // in secure mode, we extend half the time to increase randomness
+  if mi_likely(page != NULL && mi_page_free_quick_collect(page)) {
+    #if (MI_SECURE>=2) // in secure mode, we extend half the time to increase randomness
     if (page->capacity < page->reserved && ((_mi_theap_random_next(theap) & 1) == 1)) {
       (void)mi_page_extend_free(theap, page);  // ok if this fails
       mi_assert_internal(mi_page_immediate_available(page));
@@ -865,21 +886,24 @@ static mi_page_t* mi_find_free_page(mi_theap_t* theap, mi_page_queue_t* pq) {
   a certain number of allocations.
 ----------------------------------------------------------- */
 
-static mi_deferred_free_fun* volatile deferred_free = NULL;
-static _Atomic(void*) deferred_arg; // = NULL
+// The program should only install a single deferred free handler before doing allocation.
+static _Atomic(void*) deferred_free; // is `mi_deferred_free_fun*` (but some platforms don't support atomic function pointers)
+static _Atomic(void*) deferred_arg;   
 
 void _mi_deferred_free(mi_theap_t* theap, bool force) {
   theap->heartbeat++;
-  if (deferred_free != NULL && !theap->tld->recurse) {
+  mi_deferred_free_fun* const fun = (mi_deferred_free_fun*)mi_atomic_load_ptr_acquire(void,&deferred_free);
+  if (fun != NULL && !theap->tld->recurse) {
     theap->tld->recurse = true;
-    deferred_free(force, theap->heartbeat, mi_atomic_load_ptr_relaxed(void,&deferred_arg));
+    void* const arg = mi_atomic_load_ptr_acquire(void,&deferred_arg);  
+    fun(force, theap->heartbeat, arg);
     theap->tld->recurse = false;
   }
 }
 
 void mi_register_deferred_free(mi_deferred_free_fun* fn, void* arg) mi_attr_noexcept {
-  deferred_free = fn;
   mi_atomic_store_ptr_release(void,&deferred_arg, arg);
+  mi_atomic_store_ptr_release(void,&deferred_free, (void*)fn);  
 }
 
 
@@ -974,6 +998,8 @@ void* _mi_malloc_generic(mi_theap_t* theap, size_t size, size_t zero_huge_alignm
     theap->generic_count = 0;
     // call potential deferred free routines
     _mi_deferred_free(theap, false);
+    // free retired pages
+    _mi_theap_collect_retired(theap, false);
 
     // collect every once in a while (10000 by default)
     const long generic_collect = mi_option_get_clamp(mi_option_generic_collect, 1, 1000000L);
@@ -998,22 +1024,16 @@ void* _mi_malloc_generic(mi_theap_t* theap, size_t size, size_t zero_huge_alignm
 
   mi_assert_internal(mi_page_immediate_available(page));
   mi_assert_internal(mi_page_block_size(page) >= size);
-  mi_assert_internal(_mi_is_aligned(page, MI_PAGE_ALIGN));
-  mi_assert_internal(_mi_ptr_page(page)==page);
+  mi_assert_internal(_mi_is_aligned(mi_page_slice_start(page), MI_PAGE_ALIGN));
+  mi_assert_internal(_mi_ptr_page(mi_page_start(page))==page);
 
   // and try again, this time succeeding! (i.e. this should never recurse through _mi_page_malloc)
   if (usable!=NULL) { *usable = mi_page_usable_block_size(page); }
-  void* p;
-  if mi_likely(!zero) {
-    p = _mi_page_malloc(theap, page, size);
-  }
-  else {
-    p = _mi_page_malloc_zeroed(theap, page, size);
-  }
+  void* const p = _mi_page_malloc_zero(theap,page,size,zero);
   mi_assert_internal(p != NULL);
 
   // move full pages to the full queue
-  if (mi_page_is_full(page)) {
+  if (mi_page_block_size(page) > MI_SMALL_MAX_OBJ_SIZE && mi_page_is_full(page)) {
     mi_page_to_full(page, mi_page_queue_of(page));
   }
   return p;

@@ -1,7 +1,10 @@
-
 <img align="left" width="100" height="100" src="doc/mimalloc-logo.png"/>
-
-[<img align="right" src="https://dev.azure.com/Daan0324/mimalloc/_apis/build/status/microsoft.mimalloc?branchName=dev3"/>](https://dev.azure.com/Daan0324/mimalloc/_build?definitionId=1&_a=summary)
+<div align="right">
+<sup> v3:</sup><a href="https://github.com/microsoft/mimalloc/actions/workflows/test.yaml"><img src="https://github.com/microsoft/mimalloc/actions/workflows/test.yaml/badge.svg?branch=dev3"/></a>
+<sup> v2:</sup><a href="https://github.com/microsoft/mimalloc/actions/workflows/test.yaml"><img src="https://github.com/microsoft/mimalloc/actions/workflows/test.yaml/badge.svg?branch=dev2"/></a>
+<sup> v1:</sup><a href="https://github.com/microsoft/mimalloc/actions/workflows/test.yaml"><img src="https://github.com/microsoft/mimalloc/actions/workflows/test.yaml/badge.svg?branch=dev"/></a>
+&nbsp;&nbsp;&nbsp;<sup>v3:</sup><a href="https://dev.azure.com/Daan0324/mimalloc/_build?definitionId=1&_a=summary"><img src="https://dev.azure.com/Daan0324/mimalloc/_apis/build/status/microsoft.mimalloc?branchName=dev3"/></a>
+</div>
 
 # mimalloc
 
@@ -12,9 +15,9 @@ is a general purpose allocator with excellent [performance](#performance) charac
 Initially developed by Daan Leijen for the runtime systems of the
 [Koka](https://koka-lang.github.io) and [Lean](https://github.com/leanprover/lean) languages.
 
-Latest release   : `v3.2.6` (2026-01-08) release candidate 1, please report any issues.  
-Latest v2 release: `v2.2.6` (2026-01-08).  
-Latest v1 release: `v1.9.6` (2026-01-08).
+Latest release   : `v3.3.2`  (2026-04-29) recommended.  
+Latest v2 release: `v2.3.2`  (2026-04-29) stable.  
+Latest v1 release: `v1.9.10` (2026-04-29) legacy.
 
 mimalloc is a drop-in replacement for `malloc` and can be used in other programs
 without code changes, for example, on dynamically linked ELF-based systems (Linux, BSD, etc.) you can use it as:
@@ -67,25 +70,47 @@ Notable aspects of the design include:
   of benchmarks. There is also good huge OS page support for larger server programs.
 
 The [documentation](https://microsoft.github.io/mimalloc) gives a full overview of the API.
-You can read more on the design of _mimalloc_ in the [technical report](https://www.microsoft.com/en-us/research/publication/mimalloc-free-list-sharding-in-action) which also has detailed benchmark results.
+You can read more on the design of mimalloc in the [technical report](https://www.microsoft.com/en-us/research/publication/mimalloc-free-list-sharding-in-action) which also has detailed benchmark results.
 
 Enjoy!
 
-### Branches
+### Versions
 
-* `main`: latest stable release (still based on `dev2`).
-* `dev`:  development branch for mimalloc v1. Use this branch for submitting PR's.
-* `dev2`: development branch for mimalloc v2. This branch is downstream of `dev` 
-          (and is essentially equal to `dev` except for `src/segment.c`). Uses larger sliced segments to manage
-          mimalloc pages that can reduce fragmentation.
-* `dev3`: development branch for mimalloc v3 rc1. This branch is downstream of `dev`. This version 
-          simplifies the lock-free ownership of previous versions, and improves sharing of memory between 
-          threads. On certain large workloads this version may use (much) less memory.
-          Also support true first-class heaps and more efficient heap-walking.
+There are three maintained versions of mimalloc. These are mostly equal except for how the OS memory is handled. 
+New development is mostly on v3, while v1 and v2 are maintained with security and bug fixes. 
+
+- __v3__: recommended: simplifies the lock-free design of previous versions and improves sharing of 
+        memory between threads. On certain large workloads this version may use 
+        (much) less memory. Also supports true first-class heaps (that can allocate from any thread) 
+        and has more efficient heap-walking (for the CPython GC for example).
+        (release tags: `v3.x`, development branch `dev3`).
+- __v2__: stable mimalloc version. Uses thread-local segments to reduce fragmentation. (release tags: `v2.x`, development branch `dev2` and `main`)
+- __v1__: legacy version: initial design of mimalloc (release tags: `v1.9.x`, development branch `dev`). Send PR's against this version if possible.
 
 ### Releases
-
-* 2026-01-08, `v1.9.6`, `v2.2.6`, `v3.2.6` (rc1) : Important bug fixes. Many improvements to v3 including 
+* 2026-04-29, `v1.9.10`, `v2.3.2`, `v3.3.2`: various bug and security fixes through LLM audit (by @Zoxc). 
+  Only increase minimal purge size automatically if allow_thp is set to 2. Enable large OS alignment
+  on all platforms (fixing OS large pages on Windows). Fix accounting of committed memory on Linux/macOS.
+  Update MSVC atomics implementation when using C mode. Upstream Emscripten fixes. Proper atomic do-once
+  implementation. 
+* 2026-04-20, `v1.9.9`, `v2.3.1`, `v3.3.1`: various bug and security fixes. Special thanks to 
+  @jinpzhanAMD, @res2k, and @GoldJohnKing for their help in improving Windows finalization, and 
+  @Zoxc for his help in finding various issues.
+* 2026-04-15, `v1.9.8`, `v2.3.0`, `v3.3.0`: initial support for github (binary) releases, 
+  fix visiting of full pages during collection (performance),
+  fix THP alignment (performance), fix arm64 cross-compilation on Windows, enable guard pages in debug mode,
+  always use uncommitted areas between arenas (security), enable static overloading of `malloc` etc. on Windows with the 
+  static CRT (by @Noxybot), fix TLS slot leak on Windows (v3), enable clean DLL load/unload with statically linked
+  mimalloc (v3), fix race in `mi_heap_destroy` (v3), by default put page meta info separate from allocated 
+  objects (v3,security), fix C++ overrides for emscripten. Various bugs found by DeepTest include: 
+  fix offset for `mi_heap_realloc_aligned`, fix `mi_(w)dupenv_s` buffer size, fix potential overflow in size options,
+  and error codes for `mi_reallocarr(ay)`. 
+* 2026-02-03, `v3.2.8` (rc3): Fix thread reinitialize issue on macOS. Fix SIMD codegen bug on older
+  GCC versions. Extend Windows TLS slot limit from 64 to 1088. Report commit statistics more precise.
+  Fixes issue in free-page search in arenas.
+* 2026-01-15, `v1.9.7`, `v2.2.7`, `v3.2.7` (rc2): Fix zero initializing blocks that were OS allocated.  
+  For v3 various bug and performance fixes. Fix Debian 32-bit compilation.
+* 2026-01-08, `v1.9.6`, `v2.2.6`, `v3.2.6` (rc1): Important bug fixes. Many improvements to v3 including 
   true first-class heaps where one can allocate in heap from any thread, and track statistics per heap as well.
   Added `MIMALLOC_ALLOW_THP` option. This is by default enabled except on Android. When THP is detected on v3,
   mimalloc will set the `MIMALLOC_MINIMAL_PURGE_SIZE` to 2MiB to avoid breaking up potential THP huge pages.
@@ -110,54 +135,12 @@ Enjoy!
   thread local destructors (in Rust/C++); macOS tag change; macOS TLS slot fix; improve stats; 
   consistent `mimalloc.dll` on Windows (instead of `mimalloc-override.dll`); fix mimalloc-redirect on Win11 H2; 
   add 0-byte to canary; upstream CPython fixes; reduce .bss size; allow fixed TLS slot on Windows for improved performance.
-* 2024-05-21, `v1.8.7`, `v2.1.7`: Fix build issues on less common platforms. Started upstreaming patches
-  from the CPython [integration](https://github.com/python/cpython/issues/113141#issuecomment-2119255217). Upstream `vcpkg` patches.
-* 2024-05-13, `v1.8.6`, `v2.1.6`: Fix build errors on various (older) platforms. Refactored aligned allocation.
-* 2024-04-22, `v1.8.4`, `v2.1.4`: Fixes various bugs and build issues. Add `MI_LIBC_MUSL` cmake flag for musl builds.
-  Free-ing code is refactored into a separate module (`free.c`). Mimalloc page info is simplified with the block size
-  directly available (and new `block_size_shift` to improve aligned block free-ing).
-  New approach to collection of abandoned segments: When
-  a thread terminates the segments it owns are abandoned (containing still live objects) and these can be
-  reclaimed by other threads. We no longer use a list of abandoned segments but this is now done using bitmaps in arena's
-  which is more concurrent (and more aggressive). Abandoned memory can now also be reclaimed if a thread frees an object in
-  an abandoned page (which can be disabled using `mi_option_abandoned_reclaim_on_free`). The option `mi_option_max_segment_reclaim`
-  gives a maximum percentage of abandoned segments that can be reclaimed per try (=10%).
-
-* 2023-04-24, `v1.8.2`, `v2.1.2`: Fixes build issues on freeBSD, musl, and C17 (UE 5.1.1). Reduce code size/complexity
-  by removing regions and segment-cache's and only use arenas with improved memory purging -- this may improve memory
-  usage as well for larger services. Renamed options for consistency. Improved Valgrind and ASAN checking.
-
-* 2023-04-03, `v1.8.1`, `v2.1.1`: Fixes build issues on some platforms.
-
-* 2023-03-29, `v1.8.0`, `v2.1.0`: Improved support dynamic overriding on Windows 11. Improved tracing precision
-  with [asan](#asan) and [Valgrind](#valgrind), and added Windows event tracing [ETW](#ETW) (contributed by Xinglong He). Created an OS
-  abstraction layer to make it easier to port and separate platform dependent code (in `src/prim`). Fixed C++ STL compilation on older Microsoft C++ compilers, and various small bug fixes.
-
-* 2022-12-23, `v1.7.9`, `v2.0.9`: Supports building with [asan](#asan) and improved [Valgrind](#valgrind) support.
-  Support arbitrary large alignments (in particular for `std::pmr` pools).
-  Added C++ STL allocators attached to a specific heap (thanks @vmarkovtsev).
-  Heap walks now visit all object (including huge objects). Support Windows nano server containers (by Johannes Schindelin,@dscho).
-  Various small bug fixes.
-
-* 2022-11-03, `v1.7.7`, `v2.0.7`: Initial support for [Valgrind](#valgrind) for leak testing and heap block overflow
-  detection. Initial
-  support for attaching heaps to a specific memory area (only in v2). Fix `realloc` behavior for zero size blocks, remove restriction to integral multiple of the alignment in `alloc_align`, improved aligned allocation performance, reduced contention with many threads on few processors (thank you @dposluns!), vs2022 support, support `pkg-config`, .
-
-* 2022-04-14, `v1.7.6`, `v2.0.6`: fix fallback path for aligned OS allocation on Windows, improve Windows aligned allocation
-  even when compiling with older SDK's, fix dynamic overriding on macOS Monterey, fix MSVC C++ dynamic overriding, fix
-  warnings under Clang 14, improve performance if many OS threads are created and destroyed, fix statistics for large object
-  allocations, using MIMALLOC_VERBOSE=1 has no maximum on the number of error messages, various small fixes.
-
-* 2022-02-14, `v1.7.5`, `v2.0.5` (alpha): fix malloc override on
-  Windows 11, fix compilation with musl, potentially reduced
-  committed memory, add `bin/minject` for Windows,
-  improved wasm support, faster aligned allocation,
-  various small fixes.
 
 * [Older release notes](#older-release-notes)
 
 Special thanks to:
 
+* Sergiy Kuryata for his contributions on reducing memory commit -- especially on Windows with the Windows thread pool (now implemented in v3).
 * [David Carlier](https://devnexen.blogspot.com/) (@devnexen) for his many contributions, and making
   mimalloc work better on many less common operating systems, like Haiku, Dragonfly, etc.
 * Mary Feofanova (@mary3000), Evgeniy Moiseenko, and Manuel Pöter (@mpoeter) for making mimalloc TSAN checkable, and finding
@@ -180,7 +163,7 @@ mimalloc is used in various large scale low-latency services and programs, for e
 <a href="https://azure.microsoft.com/"><img height="50" align="left" src="https://upload.wikimedia.org/wikipedia/commons/a/a8/Microsoft_Azure_Logo.svg"></a>
 <a href="https://deathstrandingpc.505games.com"><img height="100" src="doc/ds-logo.png"></a>
 <a href="https://docs.unrealengine.com/4.26/en-US/WhatsNew/Builds/ReleaseNotes/4_25/"><img height="100" src="doc/unreal-logo.svg"></a>
-<a href="https://cab.spbu.ru/software/spades/"><img height="100" src="doc/spades-logo.png"></a>
+<a href="https://ablab.github.io/software/spades/"><img height="100" src="doc/spades-logo.png"></a>
 
 
 # Building
@@ -305,33 +288,52 @@ and statistics (`MIMALLOC_SHOW_STATS=1`) (in the debug version):
 
 175451865205073170563711388363 = 374456281610909315237213 * 468551
 
-heap stats:     peak      total      freed       unit
-normal   2:    16.4 kb    17.5 mb    17.5 mb      16 b   ok
-normal   3:    16.3 kb    15.2 mb    15.2 mb      24 b   ok
-normal   4:      64 b      4.6 kb     4.6 kb      32 b   ok
-normal   5:      80 b    118.4 kb   118.4 kb      40 b   ok
-normal   6:      48 b       48 b       48 b       48 b   ok
-normal  17:     960 b      960 b      960 b      320 b   ok
+subproc 0
+ blocks          peak       total     current       block      total#
+  bin S    4:    75.3 KiB    55.2 MiB     0          32   B       1.8 M    ok
+  bin S    6:    31.0 KiB   180.4 KiB     0          48   B       3.8 K    ok
+  bin S    8:    64   B      64   B       0          64   B       1        ok
+  bin S    9:   160   B     160   B       0          80   B       2        ok
+  bin S   17:     1.2 KiB     1.2 KiB     0         320   B       4        ok
+  bin S   21:   640   B       3.1 KiB     0         640   B       5        ok
+  bin S   33:     5.0 KiB     5.0 KiB     0           5.0 KiB     1        ok
 
-heap stats:     peak      total      freed       unit
-    normal:    33.9 kb    32.8 mb    32.8 mb       1 b   ok
-      huge:       0 b        0 b        0 b        1 b   ok
-     total:    33.9 kb    32.8 mb    32.8 mb       1 b   ok
-malloc requested:         32.8 mb
+  binned    :    84.2 Ki     41.5 Mi      0                                ok
+  huge      :     0           0           0                                ok
+  total     :    84.2 KiB    41.5 MiB     0
+  malloc req:                29.7 MiB
 
- committed:    58.2 kb    58.2 kb    58.2 kb       1 b   ok
-  reserved:     2.0 mb     2.0 mb     2.0 mb       1 b   ok
-     reset:       0 b        0 b        0 b        1 b   ok
-  segments:       1          1          1
--abandoned:       0
-     pages:       6          6          6
--abandoned:       0
-     mmaps:       3
- mmap fast:       0
- mmap slow:       1
-   threads:       0
-   elapsed:     2.022s
-   process: user: 1.781s, system: 0.016s, faults: 756, reclaims: 0, rss: 2.7 mb
+ pages           peak       total     current       block      total#
+  touched   :   152.8 KiB   152.8 KiB   152.8 KiB
+  pages     :     8          14           0                                ok
+  abandoned :     1         249           0                                ok
+  reclaima  :     0
+  reclaimf  :   249
+  reabandon :     0
+  waits     :     0
+  extended  :    38
+  retire    :    35
+  searches  :     0.7 avg
+
+ arenas          peak       total     current       block      total#
+  reserved  :     1.0 GiB     1.0 GiB     1.0 GiB
+  committed :     4.8 MiB     4.8 MiB     4.4 MiB
+  reset     :     0
+  purged    :   385.5 Ki
+  arenas    :     1
+  rollback  :     0
+  mmaps     :     3
+  commits   :     0
+  resets    :     1
+  purges    :     2
+  guarded   :     0
+  heaps     :     1           1           1
+
+ process         peak       total     current       block      total#
+  threads   :     1           1           1
+  numa nodes:     1
+  elapsed   :     0.553 s
+  process   : user: 0.557 s, system: 0.013 s, faults: 29, peak rss: 2.1 MiB, peak commit: 4.8 MiB
 ```
 
 The above model of using the `mi_` prefixed API is not always possible
@@ -370,7 +372,7 @@ Further options for large workloads and services:
 
 - `MIMALLOC_ALLOW_THP=1`: By default always allow transparent huge pages (THP) on Linux systems. On Android only this is
    by default off. When set to `0`, THP is disabled for the process that mimalloc runs in. If enabled, mimalloc also sets
-   the `MIMALLOC_MINIMAL_PURGE_SIZE` in v3 to 2MiB to avoid potentially breaking up transparent huge pages.
+   the `MIMALLOC_MINIMAL_PURGE_SIZE` in v3 to 2MiB to avoid potentially breaking up transparent huge pages when purging memory.
 - `MIMALLOC_USE_NUMA_NODES=N`: pretend there are at most `N` NUMA nodes. If not set, the actual NUMA nodes are detected
    at runtime. Setting `N` to 1 may avoid problems in some virtual environments. Also, setting it to a lower number than
    the actual NUMA nodes is fine and will only cause threads to potentially allocate more memory across actual NUMA
@@ -405,8 +407,7 @@ OS will copy the entire 1GiB huge page (or 2MiB large page) which can cause the 
 _mimalloc_ can be build in secure mode by using the `-DMI_SECURE=ON` flags in `cmake`. This build enables various mitigations
 to make mimalloc more robust against exploits. In particular:
 
-- All internal mimalloc pages are surrounded by guard pages and the heap metadata is behind a guard page as well (so a buffer overflow
-  exploit cannot reach into the metadata).
+- All internal mimalloc page meta-data is surrounded by guard pages (so a buffer overflow exploit cannot reach into the metadata).
 - All free list pointers are
   [encoded](https://github.com/microsoft/mimalloc/blob/783e3377f79ee82af43a0793910a9f2d01ac7863/include/mimalloc-internal.h#L396)
   with per-page keys which is used both to prevent overwrites with a known pointer, as well as to detect heap corruption.
@@ -414,6 +415,9 @@ to make mimalloc more robust against exploits. In particular:
 - The free lists are initialized in a random order and allocation randomly chooses between extension and reuse within a page to
   mitigate against attacks that rely on a predicable allocation order. Similarly, the larger heap blocks allocated by mimalloc
   from the OS are also address randomized.
+- If enabling `-DMI_SECURE_FULL=ON` there will also be guard pages at the end of each (64KiB) mimalloc page (thus interleaving
+  valid block data with inaccessible gaps). This setting is not recommended in general as it is more expensive and can lead to
+  reaching the maximum VMA limit on Linux systems if the heap gets too large.
 
 As always, evaluate with care as part of an overall security strategy as all of the above are mitigations but not guarantees.
 
@@ -430,13 +434,14 @@ various checks are done at runtime to catch development errors.
 ## Guarded Mode
 
 <span id="guarded">_mimalloc_ can be build in guarded mode using the `-DMI_GUARDED=ON` flags in `cmake`.</span>
-This enables placing OS guard pages behind certain object allocations to catch buffer overflows as they occur.
+This is `ON` by default when building a debug version of mimalloc.
+Guarded mode enables placing OS guard pages behind certain object allocations to catch buffer overflows as they occur.
 This can be invaluable to catch buffer-overflow bugs in large programs. However, it also means that any object
 allocated with a guard page takes at least 8 KiB memory for the guard page and its alignment. As such, allocating
 a guard page for every allocation may be too expensive both in terms of memory, and in terms of performance with
 many system calls. Therefore, there are various environment variables (and options) to tune this:
 
-- `MIMALLOC_GUARDED_SAMPLE_RATE=N`: Set the sample rate to `N` (by default 4000). This mode places a guard page
+- `MIMALLOC_GUARDED_SAMPLE_RATE=N`: Set the sample rate to `N` (by default 0). This mode places a guard page
   behind every `N` suitable object allocations (per thread). Since the performance in guarded mode without placing
   guard pages is close to release mode, this can be used to enable guard pages even in production to catch latent 
   buffer overflow bugs. Set the sample rate to `1` to guard every object, and to `0` to place no guard pages at all.
@@ -555,6 +560,9 @@ This is provided by [`mimalloc-override.h`](include/mimalloc-override.h). This o
 reliably though if all sources are
 under your control or otherwise mixing of pointers from different heaps may occur!
 
+Note: recently we also enabled static overloading on Windows. In that case you need
+to link with the static CRT _release_ runtime (`/MT`) and link with the static 
+`mimalloc(-debug).obj` (to take precendence over the definitions in the CRT library).
 
 # Tools
 
@@ -688,7 +696,7 @@ as [mimalloc-bench](https://github.com/daanx/mimalloc-bench).
 ## Benchmark Results on a 16-core AMD 5950x (Zen3)
 
 Testing on the 16-core AMD 5950x processor at 3.4Ghz (4.9Ghz boost), with
-with 32GiB memory at 3600Mhz, running	Ubuntu 20.04 with glibc 2.31 and GCC 9.3.0.
+32GiB memory at 3600Mhz, running	Ubuntu 20.04 with glibc 2.31 and GCC 9.3.0.
 
 We measure three versions of _mimalloc_: the main version `mi` (tag:v1.7.0),
 the new v2.0 beta version as `xmi` (tag:v2.0.0), and the main version in secure mode as `smi` (tag:v1.7.0).
@@ -909,6 +917,50 @@ provided by the bot. You will only need to do this once across all repos using o
 
 
 # Older Release Notes
+
+* 2024-05-21, `v1.8.7`, `v2.1.7`: Fix build issues on less common platforms. Started upstreaming patches
+  from the CPython [integration](https://github.com/python/cpython/issues/113141#issuecomment-2119255217). Upstream `vcpkg` patches.
+* 2024-05-13, `v1.8.6`, `v2.1.6`: Fix build errors on various (older) platforms. Refactored aligned allocation.
+* 2024-04-22, `v1.8.4`, `v2.1.4`: Fixes various bugs and build issues. Add `MI_LIBC_MUSL` cmake flag for musl builds.
+  Free-ing code is refactored into a separate module (`free.c`). Mimalloc page info is simplified with the block size
+  directly available (and new `block_size_shift` to improve aligned block free-ing).
+  New approach to collection of abandoned segments: When
+  a thread terminates the segments it owns are abandoned (containing still live objects) and these can be
+  reclaimed by other threads. We no longer use a list of abandoned segments but this is now done using bitmaps in arena's
+  which is more concurrent (and more aggressive). Abandoned memory can now also be reclaimed if a thread frees an object in
+  an abandoned page (which can be disabled using `mi_option_abandoned_reclaim_on_free`). The option `mi_option_max_segment_reclaim`
+  gives a maximum percentage of abandoned segments that can be reclaimed per try (=10%).
+
+* 2023-04-24, `v1.8.2`, `v2.1.2`: Fixes build issues on freeBSD, musl, and C17 (UE 5.1.1). Reduce code size/complexity
+  by removing regions and segment-cache's and only use arenas with improved memory purging -- this may improve memory
+  usage as well for larger services. Renamed options for consistency. Improved Valgrind and ASAN checking.
+
+* 2023-04-03, `v1.8.1`, `v2.1.1`: Fixes build issues on some platforms.
+
+* 2023-03-29, `v1.8.0`, `v2.1.0`: Improved support dynamic overriding on Windows 11. Improved tracing precision
+  with [asan](#asan) and [Valgrind](#valgrind), and added Windows event tracing [ETW](#ETW) (contributed by Xinglong He). Created an OS
+  abstraction layer to make it easier to port and separate platform dependent code (in `src/prim`). Fixed C++ STL compilation on older Microsoft C++ compilers, and various small bug fixes.
+
+* 2022-12-23, `v1.7.9`, `v2.0.9`: Supports building with [asan](#asan) and improved [Valgrind](#valgrind) support.
+  Support arbitrary large alignments (in particular for `std::pmr` pools).
+  Added C++ STL allocators attached to a specific heap (thanks @vmarkovtsev).
+  Heap walks now visit all object (including huge objects). Support Windows nano server containers (by Johannes Schindelin,@dscho).
+  Various small bug fixes.
+
+* 2022-11-03, `v1.7.7`, `v2.0.7`: Initial support for [Valgrind](#valgrind) for leak testing and heap block overflow
+  detection. Initial
+  support for attaching heaps to a specific memory area (only in v2). Fix `realloc` behavior for zero size blocks, remove restriction to integral multiple of the alignment in `alloc_align`, improved aligned allocation performance, reduced contention with many threads on few processors (thank you @dposluns!), vs2022 support, support `pkg-config`, .
+
+* 2022-04-14, `v1.7.6`, `v2.0.6`: fix fallback path for aligned OS allocation on Windows, improve Windows aligned allocation
+  even when compiling with older SDK's, fix dynamic overriding on macOS Monterey, fix MSVC C++ dynamic overriding, fix
+  warnings under Clang 14, improve performance if many OS threads are created and destroyed, fix statistics for large object
+  allocations, using MIMALLOC_VERBOSE=1 has no maximum on the number of error messages, various small fixes.
+
+* 2022-02-14, `v1.7.5`, `v2.0.5` (alpha): fix malloc override on
+  Windows 11, fix compilation with musl, potentially reduced
+  committed memory, add `bin/minject` for Windows,
+  improved wasm support, faster aligned allocation,
+  various small fixes.
 
 * 2021-11-14, `v1.7.3`, `v2.0.3` (beta): improved WASM support, improved macOS support and performance (including
   M1), improved performance for v2 for large objects, Python integration improvements, more standard
